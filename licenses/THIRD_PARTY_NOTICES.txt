@@ -1,0 +1,111 @@
+UltraEnhance Pro - Third-party software notices
+================================================
+
+UltraEnhance Pro is free software. It bundles the open-source components
+below, each under its own licence. No component is modified; the native
+tools are called as separate programs. Full licence texts are available at
+the URLs given, and copies of the ones shipped with each binary are in the
+matching vendor folder.
+
+1. Real-ESRGAN ncnn-vulkan (realesrgan-ncnn-vulkan, models realesrgan-x4plus,
+   realesrgan-x4plus-anime, realesr-animevideov3)
+   Copyright (c) 2021 Xintao Wang
+   Licence: BSD 3-Clause
+   https://github.com/xinntao/Real-ESRGAN
+
+2. RIFE ncnn-vulkan (rife-ncnn-vulkan, model rife-v4.6)
+   Copyright (c) 2021 nihui; RIFE model (c) 2020 hzwer (Megvii Research)
+   Licence: MIT
+   https://github.com/nihui/rife-ncnn-vulkan  https://github.com/hzwer/ECCV2022-RIFE
+
+3. ncnn (inside the two engines above)
+   Copyright (c) 2017 THL A29 Limited, a Tencent company
+   Licence: BSD 3-Clause
+   https://github.com/Tencent/ncnn
+
+4. GFPGAN v1.4 face restoration model (ONNX export distributed by FaceFusion)
+   Copyright (c) 2021 Tencent ARC Lab (Xintao Wang et al.)
+   Licence: Apache License 2.0 (model weights: see the GFPGAN repository; the
+   StyleGAN2-derived parts follow the NVIDIA Source Code License noted there)
+   https://github.com/TencentARC/GFPGAN
+
+5. YuNet face detection model (face_detection_yunet_2023mar.onnx)
+   Copyright (c) 2020 Shiqi Yu and contributors
+   Licence: MIT
+   https://github.com/opencv/opencv_zoo
+
+6. FFmpeg (ffmpeg.exe, ffprobe.exe; BtbN win64 GPL build)
+   Copyright (c) the FFmpeg developers
+   Licence: GNU General Public License v3 (this build includes x264, x265,
+   SVT-AV1, libvidstab and other GPL components)
+   Source code: https://ffmpeg.org/download.html  https://github.com/BtbN/FFmpeg-Builds
+   As required by the GPL, the complete corresponding source of the bundled
+   FFmpeg build is available from the BtbN FFmpeg-Builds release it came from.
+
+7. Qt for Python (PySide6) and Qt 6
+   Copyright (c) The Qt Company Ltd.
+   Licence: GNU Lesser General Public License v3 (LGPL-3.0)
+   https://www.qt.io/qt-for-python  -  Qt libraries are shipped as separate,
+   replaceable DLLs in the application folder.
+
+8. Python 3.11 runtime (embedded by PyInstaller)
+   Copyright (c) Python Software Foundation
+   Licence: PSF License Agreement
+   https://www.python.org
+
+9. PyInstaller bootloader
+   Licence: GPL 2.0 with the PyInstaller bootloader exception (allows
+   distribution of the bundled app under any licence)
+   https://pyinstaller.org
+
+10. OpenCV (opencv-python-headless)
+    Licence: Apache License 2.0
+    https://opencv.org
+
+11. NumPy
+    Licence: BSD 3-Clause
+    https://numpy.org
+
+12. Pillow
+    Licence: MIT-CMU (HPND)
+    https://python-pillow.org
+
+13. pillow-heif (HEIC/HEIF support; includes libheif LGPL-3.0, libde265 LGPL-3.0)
+    Licence: BSD 3-Clause (bindings)
+    https://github.com/bigcat88/pillow_heif
+
+14. ONNX Runtime
+    Copyright (c) Microsoft Corporation
+    Licence: MIT
+    https://onnxruntime.ai
+
+15. psutil
+    Licence: BSD 3-Clause
+    https://github.com/giampaolo/psutil
+
+16. Inno Setup (used to build the installer only)
+    Copyright (c) Jordan Russell and Martijn Laan
+    Licence: Inno Setup License (free)
+    https://jrsoftware.org/isinfo.php
+
+UltraEnhance Pro's own source code is released under the MIT License:
+
+Copyright (c) 2026 UltraEnhance Pro authors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
