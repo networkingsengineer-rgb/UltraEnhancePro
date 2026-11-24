@@ -679,7 +679,7 @@ class MainWindow(QMainWindow):
         self.set_tile.setValue(self.settings.tile_size)
         self.tile_hint = QLabel("")
         self.tile_hint.setObjectName("muted")
-        self.set_threads = QLineEdit(self.settings.threads)
+        self.set_threads = QLineEdit(str(self.settings.threads))
         self.set_threads.setToolTip("Real-ESRGAN load:process:save threads, e.g. 1:2:2. Raise the middle "
                                     "number on fast GPUs, lower it if you see errors.")
         f.addRow("GPU", self.set_gpu)

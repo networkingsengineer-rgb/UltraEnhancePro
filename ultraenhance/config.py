@@ -33,6 +33,17 @@ def vendor_dir() -> Path:
     return resource_root() / "vendor"
 
 
+def _normalize_threads(value) -> str:
+    """Return a valid Real-ESRGAN 'load:proc:save' string (e.g. '1:2:2')."""
+    text = str(value).strip()
+    parts = text.split(":")
+    if len(parts) == 3 and all(p.isdigit() and int(p) > 0 for p in parts):
+        return text
+    if text.isdigit() and int(text) > 0:          # a single number, e.g. 4 -> 1:4:2
+        return f"1:{int(text)}:2"
+    return "1:2:2"
+
+
 @dataclass
 class Settings:
     gpu_id: int = -2              # -2 = auto, -1 = CPU, 0..n = GPU index
@@ -65,10 +76,54 @@ class Settings:
     def load(cls) -> "Settings":
         try:
             data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-            known = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
-            return cls(**known)
         except Exception:
             return cls()
+        if not isinstance(data, dict):
+            return cls()
+        return cls.from_dict(data)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Settings":
+        """Build settings from saved JSON, repairing any value of the wrong type.
+
+        Older versions (or hand-edited files) could store e.g. ``"threads": 4``;
+        such values are converted when possible and otherwise reset to default.
+        """
+        defaults = cls()
+        out = cls()
+        for name in cls.__dataclass_fields__:
+            if name not in data:
+                continue
+            value, default = data[name], getattr(defaults, name)
+            try:
+                if isinstance(default, bool):
+                    if isinstance(value, bool):
+                        fixed = value
+                    elif isinstance(value, (int, float)):
+                        fixed = bool(value)
+                    elif isinstance(value, str) and value.strip().lower() in ("true", "false", "1", "0", "yes", "no"):
+                        fixed = value.strip().lower() in ("true", "1", "yes")
+                    else:
+                        raise ValueError
+                elif isinstance(default, int):
+                    if isinstance(value, bool):
+                        raise ValueError
+                    fixed = int(float(value))
+                elif isinstance(default, str):
+                    if value is None or isinstance(value, (list, dict)):
+                        raise ValueError
+                    fixed = str(value)
+                elif isinstance(default, list):
+                    if not isinstance(value, list):
+                        raise ValueError
+                    fixed = [str(v) for v in value if isinstance(v, (str, int, float))]
+                else:
+                    fixed = value
+            except (TypeError, ValueError):
+                continue
+            setattr(out, name, fixed)
+        out.threads = _normalize_threads(out.threads)
+        return out
 
     def save(self) -> None:
         APP_DIR.mkdir(parents=True, exist_ok=True)
