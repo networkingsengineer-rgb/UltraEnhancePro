@@ -32,7 +32,7 @@ PNG_PATTERN = "%08d.png"
 class VideoOptions:
     preset: str = "1080p Full HD"
     fit_mode: str = "fit"
-    model: str = "Photo (realistic)"
+    model: str = "Fast (recommended)"
     interpolate: bool = False
     target_fps: int = 60
     deinterlace: str = "auto"      # auto | on | off
