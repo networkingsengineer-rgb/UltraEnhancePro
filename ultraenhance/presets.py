@@ -23,6 +23,10 @@ MODELS = {
     "Anime / Art": ("realesrgan-x4plus-anime", (4,)),
     "Old photo restore": ("realesrgan-x4plus", (4,)),
     "Video (anime/cartoon, fast)": ("realesr-animevideov3", (2, 3, 4)),
+    # Video defaults: the small video model is roughly 10x faster than realesrgan-x4plus
+    # and runs at the exact 2x/3x/4x needed instead of always computing 4x.
+    "Fast (recommended)": ("realesr-animevideov3", (2, 3, 4)),
+    "Best quality (slow)": ("realesrgan-x4plus", (4,)),
 }
 
 QUALITY_PRESETS = {
