@@ -23,7 +23,7 @@ from .formats import VIDEO_CONTAINERS
 from .job_queue import JobControl
 from .photo import EngineContext, unique_output_path
 from .presets import MODELS, compute_geometry, plan_passes, required_factor
-from .runner import percent_from_line, run_tool
+from .runner import EngineStalled, percent_from_line, run_tool
 
 PNG_PATTERN = "%08d.png"
 
@@ -162,6 +162,12 @@ def _count_frames(d: Path) -> int:
     return sum(1 for _ in d.glob("*.png"))
 
 
+# Watchdog: if the AI engine writes no new frame for this long, it is treated as stuck.
+STALL_SECONDS_GPU = 20 * 60
+STALL_SECONDS_CPU = 90 * 60
+MIN_RETRY_TILE = 32
+
+
 def _link(src: Path, dst: Path):
     try:
         os.link(src, dst)
@@ -253,13 +259,21 @@ def enhance_video(src: str, opts: VideoOptions, ctx: EngineContext, ctl: Optiona
             for f in interp_dir.glob("*.png"):
                 f.unlink()
 
-            def on_rife(line):
-                p = percent_from_line(line)
-                if p is not None and ctl:
-                    ctl.progress(0.1 + 0.08 * p, f"Creating smooth {plan.out_fps} fps frames")
+            def on_rife():
+                if ctl:
+                    made = min(_count_frames(interp_dir), target_frames)
+                    ctl.progress(0.1 + 0.08 * made / max(1, target_frames),
+                                 f"Creating smooth {plan.out_fps} fps frames {made}/{target_frames}")
             prog(0.1, f"Creating smooth {plan.out_fps} fps frames (RIFE)")
-            run_tool(engines.rife_cmd(in_dir, interp_dir, target_frames, ctx.engine_gpu, ctx.threads,
-                                      uhd=info.height > 1080), ctl, on_rife, name="RIFE")
+            try:
+                run_tool(engines.rife_cmd(in_dir, interp_dir, target_frames, ctx.engine_gpu, ctx.threads,
+                                          uhd=info.height > 1080), ctl, name="RIFE", on_tick=on_rife,
+                         progress_counter=lambda: _count_frames(interp_dir),
+                         stall_seconds=STALL_SECONDS_CPU if ctx.cpu else STALL_SECONDS_GPU)
+            except EngineStalled:
+                raise RuntimeError(
+                    "Creating 60 fps frames got stuck on your graphics card. Update your graphics driver, "
+                    "or turn off 60 fps smoothing for this video, then press Retry.")
             if _count_frames(interp_dir) == 0:
                 raise RuntimeError("Frame interpolation produced no frames.")
             state["stage"] = "upscaling"
@@ -268,6 +282,8 @@ def enhance_video(src: str, opts: VideoOptions, ctx: EngineContext, ctl: Optiona
     # -------- 3. AI upscale + encode, chunk by chunk (resumable)
     frames = sorted(frames_dir.glob("*.png"))
     total = len(frames)
+    if total == 0:
+        raise RuntimeError("No frames were found to upscale.")
     chunk = chunk_size(opts, plan.ai_w, plan.ai_h)
     chunks = [frames[i:i + chunk] for i in range(0, total, chunk)]
     encoder = _encoder_for(opts)
@@ -298,20 +314,47 @@ def enhance_video(src: str, opts: VideoOptions, ctx: EngineContext, ctl: Optiona
             name = engines.model_name_for_scale(model_name, s)
             base = done_frames
 
-            last = [0.0]
-
-            def on_up(line, base=base, pi=pi, dst=dst, n_files=len(files)):
-                now = time.time()
-                if not ctl or now - last[0] < 1.0:
+            def on_up(base=base, pi=pi, dst=dst, n_files=len(files)):
+                # Runs once a second from run_tool, whether or not the engine prints anything.
+                if not ctl:
                     return
-                last[0] = now
-                made = _count_frames(dst)
+                made = min(_count_frames(dst), n_files)
                 frac = (pi + made / n_files) / len(plan.passes)
-                ctl.progress(0.18 + 0.75 * (base + frac * n_files) / total,
-                             f"Chunk {ci + 1}/{len(chunks)}: AI upscaling {made}/{n_files} frames"
-                             + (f" (pass {pi + 1}/{len(plan.passes)})" if len(plan.passes) > 1 else ""))
-            run_tool(engines.realesrgan_cmd(cur, dst, name, s, ctx.tile(s), ctx.engine_gpu, ctx.threads, "png"),
-                     ctl, on_up, name="Real-ESRGAN")
+                frames_now = base + frac * n_files
+                speed_done = frames_now - rate_f0
+                elapsed = time.time() - rate_t0
+                eta = elapsed / speed_done * (total - frames_now) if speed_done >= 1 else None
+                if made == 0 and frames_now - rate_f0 < 1:
+                    msg = (f"Chunk {ci + 1}/{len(chunks)}: AI engine warming up "
+                           f"({human_time(elapsed)} so far, the first frame is the slowest)")
+                else:
+                    msg = (f"Chunk {ci + 1}/{len(chunks)}: AI upscaling {made}/{n_files} frames"
+                           + (f" (pass {pi + 1}/{len(plan.passes)})" if len(plan.passes) > 1 else "")
+                           + (f", about {human_time(eta)} left" if eta is not None else ""))
+                ctl.progress(0.18 + 0.75 * frames_now / total, msg, eta)
+
+            tile = ctx.tile(s)
+            stall = STALL_SECONDS_CPU if ctx.cpu else STALL_SECONDS_GPU
+            for attempt in range(3):
+                try:
+                    run_tool(engines.realesrgan_cmd(cur, dst, name, s, tile, ctx.engine_gpu, ctx.threads, "png"),
+                             ctl, name="Real-ESRGAN", on_tick=on_up,
+                             progress_counter=lambda dst=dst: _count_frames(dst), stall_seconds=stall)
+                    break
+                except EngineStalled:
+                    smaller = max(MIN_RETRY_TILE, (tile or 256) // 2)
+                    if attempt == 2 or smaller == tile:
+                        raise RuntimeError(
+                            "The AI engine stopped responding on your graphics card, so the job was paused "
+                            "instead of waiting forever. Update your graphics driver, or in Settings pick a "
+                            "smaller Tile size or a different GPU, then press Retry. "
+                            "Finished chunks are kept.")
+                    log.warning("Real-ESRGAN stalled with tile %s; retrying chunk %d with tile %s",
+                                tile, ci + 1, smaller)
+                    tile = smaller
+                    if ctl:
+                        ctl.progress(0.18 + 0.75 * done_frames / total,
+                                     f"Chunk {ci + 1}/{len(chunks)}: engine got stuck, retrying with a smaller tile ({tile})")
             if cur not in (cin,):
                 shutil.rmtree(cur, ignore_errors=True)
             cur = dst
