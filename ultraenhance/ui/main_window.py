@@ -34,7 +34,7 @@ from .theme import stylesheet
 from .widgets import CompareView, DropArea, pil_to_qpixmap
 
 PHOTO_MODELS = ["Photo (realistic)", "Anime / Art", "Old photo restore"]
-VIDEO_MODELS = ["Photo (realistic)", "Anime / Art", "Video (anime/cartoon, fast)"]
+VIDEO_MODELS = ["Fast (recommended)", "Best quality (slow)", "Anime / Art"]
 FIT_LABELS = {"fit": "Fit (keep everything)", "fill": "Fill (crop edges)", "pad": "Pad (add black bars)"}
 ENCODER_FAMILIES = {"auto": "Auto (hardware if available)", "nvenc": "NVIDIA NVENC",
                     "amf": "AMD AMF", "qsv": "Intel Quick Sync", "software": "Software (x264/x265/SVT-AV1)"}
