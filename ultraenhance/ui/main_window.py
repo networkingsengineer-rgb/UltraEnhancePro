@@ -24,11 +24,14 @@ from PySide6.QtWidgets import (
 from .. import __app_name__, __version__, engines, face_restore, formats, gpu as gpu_mod
 from ..config import APP_DIR, LOG_FILE, Settings, log
 from ..estimates import human_bytes, human_time
-from ..ffmpeg_utils import CODECS
+from ..ffmpeg_utils import CODECS, H264_MAX_SIDE, effective_codec, recommended_bitrate_kbps
 from ..job_queue import Job, JobQueue, JobState
 from ..photo import EngineContext, PhotoOptions, enhance_photo, preview_crop
-from ..presets import FIT_MODES, MODELS, QUALITY_PRESETS, RESOLUTION_PRESETS, SCALE_PRESETS
-from ..video import VideoOptions, discard_job, enhance_video, make_plan, preview_clip, unfinished_jobs
+from ..presets import (FIT_MODES, MAX_QUALITY, MODELS, QUALITY_PRESETS, RESOLUTION_PRESETS, SCALE_PRESETS,
+                       VIDEO_MODE_CUSTOM, VIDEO_MODES, VIDEO_RESOLUTION_PRESETS, apply_video_mode,
+                       canonical_video_preset, detect_video_mode)
+from ..video import (VideoOptions, discard_job, enhance_video, make_plan, options_from_dict, preview_clip,
+                     unfinished_jobs)
 from .i18n import LANGUAGES, Translator
 from .theme import stylesheet
 from .widgets import CompareView, DropArea, pil_to_qpixmap
@@ -36,6 +39,15 @@ from .widgets import CompareView, DropArea, pil_to_qpixmap
 PHOTO_MODELS = ["Photo (realistic)", "Anime / Art", "Old photo restore"]
 VIDEO_MODELS = ["Fast (recommended)", "Best quality (slow)", "Anime / Art"]
 FIT_LABELS = {"fit": "Fit (keep everything)", "fill": "Fill (crop edges)", "pad": "Pad (add black bars)"}
+CLEANUP_LABELS = {"off": "Off", "light": "Light (compressed web video)",
+                  "strong": "Strong (old / VHS / heavily compressed)"}
+VIDEO_MODE_TIPS = {
+    "Fast HD": "Quick upscale with the fast model; repeated frames are upscaled only once.",
+    "Restore old video": "Old or low-quality footage: removes blocks and noise, fixes faded colour, "
+                         "sharpens and enhances faces.",
+    "Best quality (slow)": "Largest, slowest AI model plus face enhancement and light cleanup.",
+    VIDEO_MODE_CUSTOM: "Your own settings.",
+}
 ENCODER_FAMILIES = {"auto": "Auto (hardware if available)", "nvenc": "NVIDIA NVENC",
                     "amf": "AMD AMF", "qsv": "Intel Quick Sync", "software": "Software (x264/x265/SVT-AV1)"}
 
@@ -286,8 +298,8 @@ class MainWindow(QMainWindow):
         rows = sorted({i.row() for i in self.resume_table.selectedIndexes()}) or list(range(len(self._unfinished)))
         for r in rows:
             j = self._unfinished[r]
-            opts = VideoOptions(**{k: v for k, v in j.get("options", {}).items()
-                                   if k in VideoOptions.__dataclass_fields__})
+            # Tolerant of options saved by older versions (missing or unknown keys).
+            opts = options_from_dict(j.get("options", {}))
             if not opts.output_dir:
                 opts.output_dir = str(self.settings.resolved_output_dir())
             self._enqueue_video(j["source"], opts)
@@ -461,8 +473,14 @@ class MainWindow(QMainWindow):
         rl = QVBoxLayout(right)
         g = QGroupBox("Export settings")
         f = QFormLayout(g)
-        self.v_preset = _combo(list(RESOLUTION_PRESETS), self.settings.default_preset
-                               if self.settings.default_preset in RESOLUTION_PRESETS else "1080p Full HD")
+        self._v_mode_busy = False
+        self.v_mode = _combo(list(VIDEO_MODES) + [VIDEO_MODE_CUSTOM])
+        for i in range(self.v_mode.count()):
+            self.v_mode.setItemData(i, VIDEO_MODE_TIPS.get(self.v_mode.itemData(i), ""), Qt.ToolTipRole)
+        self.v_mode.setToolTip("One-click settings. Changing any of the settings below switches to Custom.")
+        self.v_preset = _combo(list(VIDEO_RESOLUTION_PRESETS), canonical_video_preset(self.settings.default_preset))
+        for i, (pw, ph) in enumerate(VIDEO_RESOLUTION_PRESETS.values()):
+            self.v_preset.setItemData(i, f"{pw} x {ph}", Qt.ToolTipRole)
         self.v_fit = _combo([(k, FIT_LABELS[k]) for k in FIT_MODES])
         self.v_model = _combo(VIDEO_MODELS)
         self.v_interp = QCheckBox("Smooth motion (frame interpolation)")
@@ -471,6 +489,15 @@ class MainWindow(QMainWindow):
         self.v_deint = _combo([("auto", "Auto"), ("on", "On"), ("off", "Off")])
         self.v_denoise = QCheckBox("Denoise")
         self.v_stab = QCheckBox("Stabilise shaky video (vidstab)")
+        self.v_skipdup = QCheckBox("Skip repeated frames (faster)")
+        self.v_skipdup.setToolTip("Frames that are identical to the previous one are upscaled once and reused. "
+                                  "Frame count and timing stay exactly the same.")
+        self.v_faces = QCheckBox("Enhance faces (GFPGAN)")
+        self.v_faces.setToolTip("Restores faces on every frame. Slower; best for people talking to camera.")
+        self.v_cleanup = _combo([(k, CLEANUP_LABELS[k]) for k in ("off", "light", "strong")])
+        self.v_cleanup.setToolTip("Removes compression blocks and noise before the AI upscale.")
+        self.v_autocolor = QCheckBox("Auto colour (fix faded / dull video)")
+        self.v_sharpen = QCheckBox("Sharpen (mild)")
         self.v_codec = _combo(list(CODECS), self.settings.video_codec)
         self.v_encoder = _combo(list(ENCODER_FAMILIES.items()), self.settings.video_encoder)
         self.v_quality = _combo(list(QUALITY_PRESETS), self.settings.video_quality)
@@ -480,14 +507,25 @@ class MainWindow(QMainWindow):
         self.v_crf.setSpecialValueText("Auto")
         self.v_crf.setValue(0)
         self.v_bitrate = QSpinBox()
-        self.v_bitrate.setRange(500, 400000)
+        self.v_bitrate.setRange(500, 1000000)
+        self.v_bitrate.setSingleStep(1000)
         self.v_bitrate.setSuffix(" kbps")
         self.v_bitrate.setValue(20000)
         self.v_bitrate.setEnabled(False)
         self.v_rate_mode.currentIndexChanged.connect(
             lambda: (self.v_crf.setEnabled(self.v_rate_mode.currentData() == "crf"),
-                     self.v_bitrate.setEnabled(self.v_rate_mode.currentData() == "bitrate")))
+                     self.v_bitrate.setEnabled(self.v_rate_mode.currentData() == "bitrate"),
+                     self._suggest_bitrate()))
+        self.v_quality.setItemData(self.v_quality.findData(MAX_QUALITY),
+                                   "Very low compression: biggest files, for archiving or editing later.",
+                                   Qt.ToolTipRole)
         self.v_container = _combo(list(formats.VIDEO_CONTAINERS), self.settings.video_container)
+        self.v_codec.setToolTip(f"H.264 cannot go wider than {H264_MAX_SIDE} pixels, so 6K and 8K "
+                                "automatically use H.265/HEVC.")
+        for combo in (self.v_preset, self.v_codec, self.v_quality, self.v_container, self.v_fps):
+            combo.currentIndexChanged.connect(self._suggest_bitrate)
+        self.v_interp.toggled.connect(self._suggest_bitrate)
+        f.addRow("Mode", self.v_mode)
         f.addRow("Resolution", self.v_preset)
         f.addRow("Aspect ratio", self.v_fit)
         f.addRow("AI model", self.v_model)
@@ -496,6 +534,11 @@ class MainWindow(QMainWindow):
         f.addRow("Deinterlace", self.v_deint)
         f.addRow(self.v_denoise)
         f.addRow(self.v_stab)
+        f.addRow("Clean up artefacts", self.v_cleanup)
+        f.addRow(self.v_autocolor)
+        f.addRow(self.v_sharpen)
+        f.addRow(self.v_faces)
+        f.addRow(self.v_skipdup)
         f.addRow("Codec", self.v_codec)
         f.addRow("Encoder", self.v_encoder)
         f.addRow("Quality preset", self.v_quality)
@@ -504,6 +547,13 @@ class MainWindow(QMainWindow):
         f.addRow("Bitrate", self.v_bitrate)
         f.addRow("Container", self.v_container)
         rl.addWidget(g)
+        self.v_skipdup.setChecked(True)
+        self._sync_video_mode()
+        self.v_mode.currentIndexChanged.connect(self._on_video_mode_changed)
+        for combo in (self.v_model, self.v_deint, self.v_quality, self.v_cleanup):
+            combo.currentIndexChanged.connect(self._sync_video_mode)
+        for box in (self.v_denoise, self.v_skipdup, self.v_faces, self.v_autocolor, self.v_sharpen):
+            box.toggled.connect(self._sync_video_mode)
         hint = QLabel("Select one or more videos, change the settings, then press "
                       "'Apply settings to selected'. Each video keeps its own export settings.")
         hint.setObjectName("muted")
@@ -542,10 +592,29 @@ class MainWindow(QMainWindow):
             quality=self.v_quality.currentData(),
             crf=(self.v_crf.value() or None) if mode == "crf" else None,
             bitrate_kbps=self.v_bitrate.value() if mode == "bitrate" else None,
-            container=self.v_container.currentData(), output_dir=str(self.settings.resolved_output_dir()))
+            container=self.v_container.currentData(), output_dir=str(self.settings.resolved_output_dir()),
+            skip_duplicates=self.v_skipdup.isChecked(), face_enhance=self.v_faces.isChecked(),
+            cleanup=self.v_cleanup.currentData(), auto_color=self.v_autocolor.isChecked(),
+            sharpen=self.v_sharpen.isChecked())
+
+    def _suggest_bitrate(self, *_):
+        """In Target bitrate mode, fill in a bitrate that suits the size, frame rate, codec and quality."""
+        if getattr(self, "_v_loading", False) or self.v_rate_mode.currentData() != "bitrate":
+            return
+        w, h = VIDEO_RESOLUTION_PRESETS.get(self.v_preset.currentData(), (1920, 1080))
+        fps = int(self.v_fps.currentData()) if self.v_interp.isChecked() else 30
+        codec = effective_codec(self.v_codec.currentData(), self.v_container.currentData(), w, h)
+        self.v_bitrate.setValue(recommended_bitrate_kbps(w, h, fps, codec, self.v_quality.currentData()))
 
     def load_video_form(self, o: VideoOptions):
-        _set_combo(self.v_preset, o.preset)
+        self._v_loading = True
+        try:
+            self._load_video_form(o)
+        finally:
+            self._v_loading = False
+
+    def _load_video_form(self, o: VideoOptions):
+        _set_combo(self.v_preset, canonical_video_preset(o.preset))
         _set_combo(self.v_fit, o.fit_mode)
         _set_combo(self.v_model, o.model)
         self.v_interp.setChecked(o.interpolate)
@@ -561,16 +630,77 @@ class MainWindow(QMainWindow):
         if o.bitrate_kbps:
             self.v_bitrate.setValue(o.bitrate_kbps)
         _set_combo(self.v_container, o.container)
+        busy, self._v_mode_busy = self._v_mode_busy, True
+        try:
+            self.v_skipdup.setChecked(o.skip_duplicates)
+            self.v_faces.setChecked(o.face_enhance)
+            _set_combo(self.v_cleanup, o.cleanup)
+            self.v_autocolor.setChecked(o.auto_color)
+            self.v_sharpen.setChecked(o.sharpen)
+        finally:
+            self._v_mode_busy = busy
+        self._sync_video_mode()
+
+    def _video_mode_values(self) -> dict:
+        """The form values a video mode controls, keyed like VideoOptions fields."""
+        return {"model": self.v_model.currentData(), "skip_duplicates": self.v_skipdup.isChecked(),
+                "face_enhance": self.v_faces.isChecked(), "cleanup": self.v_cleanup.currentData(),
+                "auto_color": self.v_autocolor.isChecked(), "sharpen": self.v_sharpen.isChecked(),
+                "deinterlace": self.v_deint.currentData(), "denoise": self.v_denoise.isChecked(),
+                "quality": self.v_quality.currentData()}
+
+    def _on_video_mode_changed(self):
+        mode = self.v_mode.currentData()
+        if self._v_mode_busy or mode == VIDEO_MODE_CUSTOM:
+            return
+        v = apply_video_mode(self._video_mode_values(), mode)
+        self._v_mode_busy = True
+        try:
+            _set_combo(self.v_model, v["model"])
+            self.v_skipdup.setChecked(v["skip_duplicates"])
+            self.v_faces.setChecked(v["face_enhance"])
+            _set_combo(self.v_cleanup, v["cleanup"])
+            self.v_autocolor.setChecked(v["auto_color"])
+            self.v_sharpen.setChecked(v["sharpen"])
+            _set_combo(self.v_deint, v["deinterlace"])
+            self.v_denoise.setChecked(v["denoise"])
+            _set_combo(self.v_quality, v["quality"])
+        finally:
+            self._v_mode_busy = False
+
+    def _sync_video_mode(self, *_):
+        """After any setting changes, show the mode the form matches (Custom if none)."""
+        if self._v_mode_busy:
+            return
+        self._v_mode_busy = True
+        try:
+            _set_combo(self.v_mode, detect_video_mode(self._video_mode_values()))
+        finally:
+            self._v_mode_busy = False
 
     @staticmethod
     def _video_summary(o: VideoOptions) -> str:
-        parts = [o.preset.split(" ")[0], o.codec, o.container, o.quality]
+        mode = detect_video_mode(asdict(o))
+        w, h = VIDEO_RESOLUTION_PRESETS.get(canonical_video_preset(o.preset), (1920, 1080))
+        codec = effective_codec(o.codec, o.container, w, h)
+        parts = ([mode] if mode != VIDEO_MODE_CUSTOM else []) + [o.preset.split(" ")[0], codec, o.container,
+                                                                  o.quality]
         if o.interpolate:
             parts.append(f"{o.target_fps} fps")
         if o.stabilize:
             parts.append("stabilised")
         if o.denoise:
             parts.append("denoise")
+        if o.cleanup != "off":
+            parts.append(f"{o.cleanup} cleanup")
+        if o.auto_color:
+            parts.append("auto colour")
+        if o.sharpen:
+            parts.append("sharpen")
+        if o.face_enhance:
+            parts.append("faces")
+        if not o.skip_duplicates:
+            parts.append("no frame skipping")
         if o.bitrate_kbps:
             parts.append(f"{o.bitrate_kbps} kbps")
         elif o.crf:
@@ -1016,10 +1146,10 @@ class MainWindow(QMainWindow):
         big = []
         for r in rows:
             path = self.video_table.item(r, 0).data(Qt.UserRole)
-            if self.video_opts[path].preset.startswith("8K"):
+            if self.video_opts[path].preset.startswith(("8K", "6K")):
                 big.append(Path(path).name)
         if big and QMessageBox.question(
-                self, "8K video", "8K video is very slow (often many hours per minute of video) and the "
+                self, "6K / 8K video", "6K and 8K video is very slow (often many hours per minute of video) and the "
                 "files are very large.\n\n" + "\n".join(big) + "\n\nContinue?") != QMessageBox.Yes:
             return
         for r in rows:
@@ -1198,6 +1328,8 @@ HELP_HTML = """
 <h3>Videos</h3>
 <ol>
 <li>Open <b>Video Enhance</b> and drop videos (MP4, MKV, MOV, AVI, WEBM, WMV, FLV and more).</li>
+<li>Pick a <b>Mode</b>: <b>Fast HD</b> (quick), <b>Restore old video</b> (removes blocks and noise, fixes faded
+colour, sharpens, enhances faces) or <b>Best quality (slow)</b>. Changing any setting switches to Custom.</li>
 <li>Choose the export settings, select one or more videos in the list, then press
 <b>Apply settings to selected</b>. Every video keeps its own settings, shown in the list.</li>
 <li>Press <b>Estimate</b> for an honest size, disk-space and time estimate, and <b>Preview 5 seconds</b> to test first.</li>
@@ -1206,7 +1338,13 @@ HELP_HTML = """
 <h3>Tips</h3>
 <ul>
 <li>"Ran out of memory": Settings &gt; Tile size, try 128 or 64, then Retry in the Batch Queue.</li>
-<li>Video 4K/8K is slow. 8K can take many hours per minute of video and needs hundreds of GB of free space.</li>
+<li>Video 4K/6K/8K is slow. 8K can take many hours per minute of video. Frames are processed a chunk at a
+time and deleted as they go, so long videos need far less temporary space than before (60 fps smoothing still
+keeps every frame). 6K and 8K use H.265/HEVC automatically, because H.264 stops at 4096 pixels.</li>
+<li>Repeated frames (still scenes, slideshows) are upscaled only once, so they finish faster.</li>
+<li><b>Max quality (large file)</b> keeps almost all detail; files are several times bigger. MP4 files over 4 GB
+are fine on NTFS/exFAT drives (not FAT32 USB sticks). If MP4 cannot hold a video's audio or subtitles, the app
+saves an MKV instead.</li>
 <li>Pause keeps the job in memory; Stop cancels it (video jobs can still be resumed later).</li>
 <li>Log file: {log}</li>
 </ul>
