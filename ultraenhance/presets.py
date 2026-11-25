@@ -13,6 +13,25 @@ RESOLUTION_PRESETS = {
     "4K (2160p)": (3840, 2160),
     "8K (4320p)": (7680, 4320),
 }
+# Output sizes offered for video (the photo side keeps RESOLUTION_PRESETS above).
+VIDEO_RESOLUTION_PRESETS = {
+    "720p": (1280, 720),
+    "1080p Full HD": (1920, 1080),
+    "2K (1440p QHD)": (2560, 1440),
+    "4K (2160p UHD)": (3840, 2160),
+    "6K (3240p)": (5760, 3240),
+    "8K (4320p)": (7680, 4320),
+}
+# Older video preset names (saved jobs / settings) -> current name. Both keep working.
+VIDEO_PRESET_ALIASES = {"720p HD": "720p", "2K (1440p)": "2K (1440p QHD)", "4K (2160p)": "4K (2160p UHD)"}
+
+
+def canonical_video_preset(name: str, default: str = "1080p Full HD") -> str:
+    """Map any known preset name (old or new) to the name shown in the video list."""
+    name = VIDEO_PRESET_ALIASES.get(name, name)
+    return name if name in VIDEO_RESOLUTION_PRESETS else default
+
+
 SCALE_PRESETS = {"2x": 2, "3x": 3, "4x": 4, "8x": 8}
 
 FIT_MODES = ("fit", "fill", "pad")
@@ -29,12 +48,53 @@ MODELS = {
     "Best quality (slow)": ("realesrgan-x4plus", (4,)),
 }
 
+MAX_QUALITY = "Max quality (large file)"
 QUALITY_PRESETS = {
     # name: (x264/x265 preset, crf, hw preset)
     "Fast": ("veryfast", 23, "p2"),
     "Balanced": ("medium", 20, "p5"),
     "Best": ("slow", 17, "p7"),
+    # Near-transparent: low CRF, big files. Meant for archiving or further editing.
+    MAX_QUALITY: ("slow", 14, "p7"),
 }
+
+
+# One-click video modes: name -> the VideoOptions fields the mode sets. Every mode
+# sets the same fields so switching modes never leaves one mode's extras behind.
+# Fields not listed (resolution, codec, container, ...) are left as they are.
+VIDEO_MODE_CUSTOM = "Custom"
+VIDEO_MODES = {
+    "Fast HD": {
+        "model": "Fast (recommended)", "skip_duplicates": True, "face_enhance": False,
+        "cleanup": "off", "auto_color": False, "sharpen": False,
+        "deinterlace": "auto", "denoise": False, "quality": "Balanced",
+    },
+    "Restore old video": {
+        "model": "Fast (recommended)", "skip_duplicates": True, "face_enhance": True,
+        "cleanup": "strong", "auto_color": True, "sharpen": True,
+        "deinterlace": "auto", "denoise": True,
+    },
+    "Best quality (slow)": {
+        "model": "Best quality (slow)", "skip_duplicates": True, "face_enhance": True,
+        "cleanup": "light", "auto_color": False, "sharpen": False,
+        "deinterlace": "auto", "denoise": False, "quality": "Best",
+    },
+}
+
+
+def apply_video_mode(values: dict, mode: str) -> dict:
+    """Return a copy of an options dict with a mode's settings applied (Custom = unchanged)."""
+    out = dict(values)
+    out.update(VIDEO_MODES.get(mode, {}))
+    return out
+
+
+def detect_video_mode(values: dict) -> str:
+    """The mode whose settings all match these options, else Custom."""
+    for name, overrides in VIDEO_MODES.items():
+        if all(values.get(k) == v for k, v in overrides.items()):
+            return name
+    return VIDEO_MODE_CUSTOM
 
 
 @dataclass(frozen=True)
@@ -54,11 +114,16 @@ def even(n: float) -> int:
     return max(2, v)
 
 
+# Every preset name accepted by target_box: photo names, video names and old video names.
+_RES_LOOKUP = dict(RESOLUTION_PRESETS)
+_RES_LOOKUP.update(VIDEO_RESOLUTION_PRESETS)
+
+
 def target_box(preset: str, src_w: int, src_h: int) -> Tuple[int, int]:
     """Return the (w, h) box for a resolution preset, rotated for portrait sources."""
-    if preset not in RESOLUTION_PRESETS:
+    if preset not in _RES_LOOKUP:
         raise KeyError(f"Unknown preset: {preset}")
-    w, h = RESOLUTION_PRESETS[preset]
+    w, h = _RES_LOOKUP[preset]
     if src_h > src_w:  # portrait: swap the box
         w, h = h, w
     return w, h
